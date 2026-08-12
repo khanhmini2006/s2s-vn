@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<title>s2s-vn WebRTC — Voice Agent tiếng Việt</title>
+</head>
+<body>
+<nav class="nav-menu">
+  <a href="/" class="nav-brand">s2s-vn</a>
+  <div class="nav-links">
+    <a href="/demo">Demo</a>
+    <a href="/webrtc" class="active">WebRTC</a>
+    <a href="/v1/config" target="_blank">API Config</a>
+    <a href="/v1/health" target="_blank">Health</a>
+  </div>
+</nav>
+<header class="hero">
+  <h1 class="page-title">WebRTC Voice Agent</h1>
+  <p class="page-sub">RTCPeerConnection + Opus 48k → pipeline (VAD → STT → LLM → TTS) → audio track về browser.</p>
+</header>
+<main>
+  <div class="status-row">
+    <span id="dot" class="dot"></span>
+    <span id="status-text">Chưa kết nối</span>
+  </div>
+  <div class="controls">
+    <button id="btn-start" disabled>Bắt đầu</button>
+    <button id="btn-stop" disabled>Dừng</button>
+  </div>
+  <div class="card">
+    <h3>Bạn nói</h3>
+    <div id="user-text"></div>
+  </div>
+  <div class="card">
+    <h3>Trợ lý trả lời</h3>
+    <div id="assistant-text"></div>
+  </div>
+  <audio id="remote-audio" autoplay style="display:none"></audio>
+  <div id="error" class="err"></div>
+</main>
+<footer>WebRTC signaling POST /v1/realtime/calls · Opus 48k · RTCDataChannel "events"</footer>
+
+<script>
+"use strict";
+
+let pc = null;
+let dc = null;
+let micStream = null;
+let isRunning = false;
+let localTracks = [];
+
+const statusText = document.getElementById('status-text');
+const dot = document.getElementById('dot');
+const userEl = document.getElementById('user-text');
+const assistantEl = document.getElementById('assistant-text');
+const errEl = document.getElementById('error');
+const btnStart = document.getElementById('btn-start');
+const btnStop = document.getElementById('btn-stop');
+
+function setStatus(text, cls) {
+  statusText.textContent = text;
+  dot.className = 'dot' + (cls ? ' ' + cls : '');
+}
+function logError(msg) { errEl.textContent = msg; }
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case 'server.model_ready':
+      setStatus('Sẵn sàng. Nhấn Bắt đầu để nói.', 'online');
+      btnStart.disabled = false;
+      break;
+    case 'input_audio_buffer.speech_started':
+      setStatus('🎤 Đang nghe...', 'listening');
+      userEl.textContent = '';
+      assistantEl.textContent = '';
+      break;
+    case 'input_audio_buffer.speech_stopped':
+      setStatus('Đang xử lý...', 'speaking');
+      break;
+    case 'conversation.item.input_audio_transcription.delta':
+      userEl.textContent += ev.delta;
+      break;
+    case 'conversation.item.input_audio_transcription.completed':
+      userEl.textContent = ev.transcript;
+      break;
+    case 'response.created':
+      setStatus('🤖 Trợ lý đang trả lời...', 'speaking');
+      break;
+    case 'response.output_audio_transcript.delta':
+      assistantEl.textContent += ev.delta;
+      break;
+    case 'response.done':
+      setStatus('✅ Hoàn tất', 'online');
+      break;
+    case 'error':
+      logError(ev.error && ev.error.message || 'Lỗi');
+      break;
+  }
+}
+
+async function connect() {
+  const r = await fetch('/v1/realtime/calls', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp: null, type: 'offer' }),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.detail || 'Signaling lỗi ' + r.status);
+  }
+  const offer = await r.json();
+  await pc.setRemoteDescription({ sdp: offer.sdp, type: offer.type });
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+}
+
+async function start() {
+  errEl.textContent = '';
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    logError('Không truy cập mic: ' + e.message);
+    return;
+  }
+  pc = new RTCPeerConnection();
+  localTracks = micStream.getTracks();
+  localTracks.forEach(t => pc.addTrack(t, micStream));
+
+  pc.ontrack = (ev) => {
+    document.getElementById('remote-audio').srcObject = ev.streams[0];
+    setStatus('Đã nhận audio track. Đang kết nối...', 'online');
+  };
+  pc.ondatachannel = (ev) => {
+    dc = ev.channel;
+    dc.onmessage = (e) => {
+      try { handleEvent(JSON.parse(e.data)); } catch (_) { /* ignore */ }
+    };
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') {
+      setStatus('Kết nối WebRTC xong.', 'online');
+    } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      setStatus('Mất kết nối', '');
+      stop();
+    }
+  };
+
+  try {
+    await connect();
+    isRunning = true;
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+  } catch (e) {
+    logError('Lỗi kết nối: ' + e.message);
+    stop();
+  }
+}
+
+function stop() {
+  isRunning = false;
+  if (localTracks) localTracks.forEach(t => t.stop());
+  localTracks = [];
+  if (micStream) { micStream = null; }
+  if (pc) { pc.close(); pc = null; }
+  dc = null;
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+}
+
+btnStart.onclick = start;
+btnStop.onclick = stop;
+</script>
+</body>
+</html>

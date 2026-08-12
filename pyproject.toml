@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "s2s-vn"
+version = "0.1.0"
+description = "Voice-agent pipeline VAD -> STT -> LLM -> TTS, tiếng Việt, OpenAI Realtime-compatible"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+[project.optional-dependencies]
+stt = ["faster-whisper"]
+zipformer = ["sherpa-onnx"]
+tts = ["vieneu"]
+tts-mms = ["transformers"]  # facebook/mms-tts-vie (VITS, CC-BY-NC-4.0 — chỉ phi thương mại)
+realtime = ["fastapi", "uvicorn", "websockets"]
+transformers = ["transformers", "torch", "bitsandbytes", "accelerate"]
+talk = ["sounddevice", "websocket-client"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+s2s-vn = "s2s_vn.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

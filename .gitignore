@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Config runtime — có thể chứa API key thật, không commit
+config.json
+config-local.json
+config-gemini.json
+config-mms.json
+*.local.json
+
+# Data / cache runtime
+chroma_db/
+
+# Tool/editor cache — không thuộc project
+.claude/
+.playwright-mcp/
+.superpowers/
+.scratch/
+
+# OS
+.DS_Store

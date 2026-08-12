@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<title>s2s-vn Demo — Voice Agent tiếng Việt</title>
+
+</head>
+<body>
+<nav class="nav-menu">
+  <a href="/" class="nav-brand">s2s-vn</a>
+  <div class="nav-links">
+    <a href="/demo" class="active">Demo</a>
+    <a href="/webrtc">WebRTC</a>
+    <a href="/v1/config" target="_blank">API Config</a>
+    <a href="/v1/health" target="_blank">Health</a>
+  </div>
+</nav>
+<header class="hero">
+  <h1 class="page-title">Voice Agent tiếng Việt</h1>
+  <p class="page-sub">VAD Silero → STT PhoWhisper → LLM Qwen3-4B (local) → TTS VieNeu</p>
+</header>
+<main>
+  <div class="status-row">
+    <span id="dot" class="dot"></span>
+    <span id="status-text">Chưa kết nối</span>
+  </div>
+
+  <div class="voice-row">
+    <label for="mic">Mic:</label>
+    <select id="mic"><option>Default</option></select>
+    <span id="usage"></span>
+  </div>
+
+  <div class="controls">
+    <button id="btn-start" disabled>Bắt đầu</button>
+    <button id="btn-stop" disabled>Dừng</button>
+    <button id="btn-settings" class="btn-ghost">Settings</button>
+    <button id="btn-test" class="btn-ghost">🔍 Test luồng</button>
+    <button id="btn-reload" class="btn-ghost">🔄 Reload phiên</button>
+  </div>
+  <div id="test-results" class="settings-panel">
+    <div class="card">
+      <h3>Kết quả test luồng (STT → LLM → RAG → TTS)</h3>
+      <div id="test-output" style="font-size:13px; line-height:1.8;"></div>
+      <div class="hint">Test thật sẽ tải model (lần đầu ~1 phút). Chạy khi cần chẩn đoán lỗi.</div>
+    </div>
+  </div>
+
+  <div id="settings-panel" class="settings-panel">
+    <div class="card">
+      <h3>Điều chỉnh nhanh phiên này</h3>
+      <div class="field">
+        <label>System Prompt (áp dụng ngay, phiên đang mở)</label>
+        <textarea id="cfg-prompt">Bạn là trợ lý ảo tiếng Việt, nói chuyện tự nhiên thoải mái như với bạn bè. Trả lời rất ngắn, chỉ 1-2 câu. Không dùng icon hay emoji. Đi thẳng vào trả lời, không xin lỗi thừa. Nếu không biết, nói rõ. Luôn trả lời bằng tiếng Việt.</textarea>
+      </div>
+      <button id="btn-apply">Áp dụng</button>
+      <div class="hint">Chỉnh VAD và model mặc định → tab Settings (áp cho phiên kết nối kế tiếp).</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Bạn nói</h3>
+    <div id="user-text"></div>
+  </div>
+  <div class="card">
+    <h3>Trợ lý trả lời</h3>
+    <div id="assistant-text"></div>
+  </div>
+  <div id="error" class="err"></div>
+</main>
+<footer>OpenAI Realtime-compatible WebSocket · PCM16 16kHz · localhost:8765</footer>
+
+<script>
+"use strict";
+
+// ---------- Tham số protocol ----------
+const PROTOCOL_RATE = 16000;   // pipeline 16k = protocol 16k (như repo gốc, bỏ resample thừa)
+const DEVICE_RATE = 48000;     // AudioContext mặc định
+
+let ws = null;
+let audioCtx = null;
+let micStream = null;
+let scriptNode = null;
+let isRunning = false;
+
+let sendAudio = false;         // đang gửi mic → server
+let partialBuf = [];           // gom mic audio chưa đủ chunk
+
+let outQueue = [];             // audio chunks nhận từ server (Float32 24k)
+let playing = false;
+let currentSource = null;
+
+const userEl = document.getElementById('user-text');
+const assistantEl = document.getElementById('assistant-text');
+const statusText = document.getElementById('status-text');
+const dot = document.getElementById('dot');
+const errEl = document.getElementById('error');
+const btnStart = document.getElementById('btn-start');
+const btnStop = document.getElementById('btn-stop');
+const usageEl = document.getElementById('usage');
+const micSelect = document.getElementById('mic');
+
+async function populateMics() {
+  try {
+    // cần permission để có label
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    s.getTracks().forEach(t => t.stop());
+  } catch (e) { /* ignore */ }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const mics = devices.filter(d => d.kind === 'audioinput');
+  micSelect.innerHTML = '';
+  mics.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d.deviceId;
+    opt.textContent = d.label || ('Device ' + d.deviceId.slice(0,8));
+    micSelect.appendChild(opt);
+  });
+  if (mics.length === 0) {
+    micSelect.innerHTML = '<option>Không có mic</option>';
+  }
+}
+
+function setStatus(text, cls) {
+  statusText.textContent = text;
+  dot.className = 'dot' + (cls ? ' ' + cls : '');
+}
+
+function logError(msg) { errEl.textContent = msg; }
+
+// ---------- Audio helpers ----------
+function pcm16ToFloat32(bytes) {
+  const f = new Float32Array(bytes.byteLength / 2);
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < f.length; i++) f[i] = v.getInt16(i * 2, true) / 32768;
+  return f;
+}
+
+function float32ToPcm16(f32) {
+  const out = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) {
+    let s = Math.max(-1, Math.min(1, f32[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return new Uint8Array(out.buffer);
+}
+
+// linear resample Float32Array
+function resampleLinear(src, srcRate, dstRate) {
+  if (srcRate === dstRate) return src;
+  const ratio = dstRate / srcRate;
+  const n = Math.max(1, Math.round(src.length * ratio));
+  const dst = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const pos = i / ratio;
+    const i0 = Math.floor(pos), i1 = Math.min(i0 + 1, src.length - 1);
+    const frac = pos - i0;
+    dst[i] = src[i0] * (1 - frac) + src[i1] * frac;
+  }
+  return dst;
+}
+
+// ---------- WebSocket ----------
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/v1/realtime`);
+
+  ws.onopen = () => {
+    setStatus('Đã kết nối. Nhấn Bắt đầu để nói.', 'online');
+    // cập nhật giọng đang chọn
+  };
+  ws.onclose = () => {
+    setStatus('Mất kết nối', '');
+    if (isRunning) { stopMic(); }
+    ws = null;
+  };
+  ws.onerror = () => logError('Lỗi WebSocket');
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    handleServerEvent(msg);
+  };
+}
+
+// ---------- Server events ----------
+function handleServerEvent(msg) {
+  switch (msg.type) {
+    case 'session.updated':
+      break;
+    case 'server.model_ready':
+      // model đã warmup xong — cho phép bắt đầu nói
+      setStatus('Sẵn sàng. Nhấn Bắt đầu để nói.', 'online');
+      btnStart.disabled = false;
+      break;
+    case 'input_audio_buffer.speech_started':
+      setStatus('🎤 Đang nghe...', 'listening');
+      userEl.textContent = '';
+      assistantEl.textContent = '';
+      break;
+    case 'input_audio_buffer.speech_stopped':
+      setStatus('Đang xử lý...', 'speaking');
+      break;
+    case 'conversation.item.input_audio_transcription.delta':
+      userEl.textContent += msg.delta;
+      break;
+    case 'conversation.item.input_audio_transcription.completed':
+      userEl.textContent = msg.transcript;
+      break;
+    case 'response.created':
+      setStatus('🤖 Trợ lý đang trả lời...', 'speaking');
+      break;
+    case 'response.output_audio_transcript.delta':
+      assistantEl.textContent += msg.delta;
+      break;
+    case 'response.output_audio.delta':
+      queueAudio(msg.delta);
+      break;
+    case 'response.done':
+      setStatus('✅ Hoàn tất', 'online');
+      if (msg.response && msg.response.usage) {
+        const u = msg.response.usage;
+        usageEl.textContent = `tokens: ${u.input_tokens || 0} in / ${u.output_tokens || 0} out`;
+      }
+      break;
+    case 'error':
+      logError(msg.error && msg.error.message || 'Lỗi');
+      break;
+  }
+}
+
+// ---------- Audio output (phát reply) ----------
+function queueAudio(b64) {
+  try {
+    const bytes = base64ToBytes(b64);
+    const f32 = pcm16ToFloat32(bytes);
+    outQueue.push(f32);
+    if (!playing) playNext();
+  } catch (e) { /* bỏ qua chunk lỗi */ }
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function playNext() {
+  if (playing || outQueue.length === 0) return;
+  playing = true;
+  const src = outQueue.shift();
+  const dst = resampleLinear(src, PROTOCOL_RATE, DEVICE_RATE);
+  const buffer = audioCtx.createBuffer(1, dst.length, DEVICE_RATE);
+  buffer.copyToChannel(dst, 0);
+  const node = audioCtx.createBufferSource();
+  node.buffer = buffer;
+  node.connect(audioCtx.destination);
+  currentSource = node;
+  node.onended = () => {
+    playing = false;
+    if (outQueue.length > 0) playNext();
+  };
+  node.start();
+}
+
+// ---------- Mic capture ----------
+async function startMic() {
+  const micId = micSelect.value;
+  const constraints = { audio: {} };
+  if (micId && micId !== 'Default') {
+    constraints.audio.deviceId = { exact: micId };
+  }
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (e) {
+    logError('Không truy cập mic được: ' + e.message);
+    return false;
+  }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: DEVICE_RATE });
+  const source = audioCtx.createMediaStreamSource(micStream);
+  scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+  scriptNode.onaudioprocess = (e) => {
+    if (!sendAudio || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const input = e.inputBuffer.getChannelData(0); // Float32 48k
+    // resample 48k → 24k
+    const down = resampleLinear(input, DEVICE_RATE, PROTOCOL_RATE);
+    partialBuf.push(down);
+    let acc = 0;
+    partialBuf.forEach(c => acc += c.length);
+    // gom ≥ 4800 mẫu (~200ms) mới gửi
+    if (acc >= 4800) {
+      const merged = new Float32Array(acc);
+      let off = 0;
+      partialBuf.forEach(c => { merged.set(c, off); off += c.length; });
+      partialBuf = [];
+      const pcm = float32ToPcm16(merged);
+      ws.send(JSON.stringify({
+        type: 'input_audio_buffer.append',
+        audio: b64fromBytes(pcm)
+      }));
+    }
+  };
+  source.connect(scriptNode);
+  scriptNode.connect(audioCtx.destination);
+  return true;
+}
+
+function b64fromBytes(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+
+function stopMic() {
+  sendAudio = false;
+  if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+}
+
+// ---------- Control ----------
+btnStart.onclick = async () => {
+  errEl.textContent = '';
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    logError('Đang kết nối lại...');
+    return;
+  }
+  const ok = await startMic();
+  if (!ok) return;
+  isRunning = true;
+  sendAudio = true;
+  btnStart.disabled = true;
+  btnStop.disabled = false;
+  setStatus('🎤 Đang nghe — nói đi...', 'listening');
+};
+
+btnStop.onclick = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+  }
+  stopMic();
+  isRunning = false;
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+  setStatus('Đã chốt câu. Chờ trả lời...', 'speaking');
+};
+
+
+// ---------- Test luồng ----------
+const STAGE_LABELS = { stt: 'STT', llm: 'LLM', rag: 'RAG', tts: 'TTS' };
+document.getElementById('btn-test').onclick = async () => {
+  const panel = document.getElementById('test-results');
+  const out = document.getElementById('test-output');
+  panel.classList.toggle('open');
+  if (!panel.classList.contains('open')) return;
+  out.textContent = 'Đang test (tải model lần đầu có thể mất ~1 phút)...';
+  const btn = document.getElementById('btn-test');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/v1/test/pipeline', { method: 'POST' });
+    const data = await r.json();
+    if (r.ok) {
+      out.innerHTML = '';
+      ['stt', 'llm', 'rag', 'tts'].forEach(s => {
+        const st = data[s] || {};
+        const row = document.createElement('div');
+        const icon = st.ok ? '✅' : '❌';
+        row.textContent = `${icon} ${STAGE_LABELS[s]}: ${st.detail || 'không có kết quả'}`;
+        out.appendChild(row);
+      });
+    } else {
+      out.textContent = 'Lỗi server: ' + (data.detail || r.status);
+    }
+  } catch (e) {
+    out.textContent = 'Lỗi mạng: ' + e.message;
+  }
+  btn.disabled = false;
+};
+
+// ---------- Reload phiên ----------
+// Đóng WS + kết nối lại → server build pipeline MỚI từ config đã lưu (settings).
+// Không cần F5 trang. Model mới đổi qua settings sẽ warmup lại (~1 phút).
+document.getElementById('btn-reload').onclick = () => {
+  if (isRunning) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+    }
+    stopMic();
+    isRunning = false;
+  }
+  // chặn onclose cũ ghi đè trạng thái khi ta chủ động đóng
+  if (ws) {
+    ws.onclose = null;
+    try { ws.close(); } catch (e) { /* ignore */ }
+    ws = null;
+  }
+  userEl.textContent = '';
+  assistantEl.textContent = '';
+  errEl.textContent = '';
+  usageEl.textContent = '';
+  setStatus('Đang kết nối lại với config mới...', '');
+  btnStart.disabled = true;
+  btnStop.disabled = true;
+  connect();
+};
+
+// ---------- Settings ----------
+document.getElementById('btn-settings').onclick = () => {
+  document.getElementById('settings-panel').classList.toggle('open');
+};
+
+document.getElementById('btn-apply').onclick = () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    logError('Chưa kết nối server');
+    return;
+  }
+  const prompt = document.getElementById('cfg-prompt').value;
+  ws.send(JSON.stringify({
+    type: 'session.update',
+    session: {
+      instructions: prompt,
+    },
+  }));
+  errEl.textContent = '';
+  // feedback
+  const btn = document.getElementById('btn-apply');
+  btn.textContent = '✓ Đã áp dụng';
+  setTimeout(() => { btn.textContent = 'Áp dụng'; }, 1500);
+};
+
+// ---------- Init ----------
+setStatus('Đang khởi động model (lần đầu ~1 phút)...', '');
+// đợi server sẵn sàng rồi kết nối
+function init() {
+  fetch('/').then(r => {
+    if (r.ok) {
+      connect();
+      btnStart.disabled = true;  // chờ server.model_ready (model warmup xong)
+      populateMics();
+      // fallback: nếu ready event không đến (server cũ/lỗi) vẫn cho Start sau 120s
+      setTimeout(() => { btnStart.disabled = false; }, 120000);
+    } else {
+      setTimeout(init, 2000);
+    }
+  }).catch(() => setTimeout(init, 2000));
+}
+
+init();
+
+// ---------- Debug/test hook (demo) ----------
+// Cho phép test audio injection khi không có mic thật (headless)
+window.__demo = {
+  sendAppend(b64) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
+    }
+  },
+  commit() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+    }
+  },
+  get status() { return statusText.textContent; },
+  get userText() { return userEl.textContent; },
+  get assistantText() { return assistantEl.textContent; },
+};
+</script>
+</body>
+</html>

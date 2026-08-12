@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>s2s-vn — Voice Agent tiếng Việt</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<style>
+  .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+  .tool {
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 22px; text-decoration: none;
+    color: var(--text); transition: border-color .15s, transform .05s;
+  }
+  .tool:hover { border-color: var(--accent); }
+  .tool .tool-name {
+    font-family: "Be Vietnam Pro", sans-serif;
+    font-size: 16px; font-weight: 600; color: var(--accent);
+  }
+  .tool .tool-desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .tool .tool-go { font-size: 12px; color: var(--faint); }
+  .tool:hover .tool-go { color: var(--accent); }
+  .api-links { display: flex; gap: 16px; justify-content: center; margin-top: 4px; }
+  .api-links a { color: var(--faint); font-size: 12px; text-decoration: none; }
+  .api-links a:hover { color: var(--accent); }
+  @media (max-width: 600px) { .tool-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<nav class="nav-menu">
+  <a href="/" class="nav-brand">s2s-vn</a>
+  <div class="nav-links">
+    <a href="/demo">Demo</a>
+    <a href="/webrtc">WebRTC</a>
+    <a href="/v1/config" target="_blank">API Config</a>
+    <a href="/v1/health" target="_blank">Health</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <h1 class="page-title">Voice Agent tiếng Việt</h1>
+  <p class="page-sub">Pipeline giọng nói chạy local: VAD Silero → STT PhoWhisper → LLM Qwen3 → TTS VieNeu. OpenAI Realtime-compatible WebSocket.</p>
+  <div class="pipeline" aria-label="Luồng xử lý: VAD, STT, LLM, TTS">
+    <div class="stage"><span class="stage-name">VAD</span><span class="stage-desc">Nghe</span></div>
+    <div class="flow"></div>
+    <div class="stage"><span class="stage-name">STT</span><span class="stage-desc">Hiểu</span></div>
+    <div class="flow"></div>
+    <div class="stage"><span class="stage-name">LLM</span><span class="stage-desc">Suy nghĩ</span></div>
+    <div class="flow"></div>
+    <div class="stage"><span class="stage-name">TTS</span><span class="stage-desc">Trả lời</span></div>
+  </div>
+</header>
+
+<main>
+  <div class="tool-grid">
+    <a class="tool" href="/demo">
+      <span class="tool-name">Trò chuyện</span>
+      <span class="tool-desc">Nói chuyện với agent bằng giọng thật — mic → nghe → trả lời, hiển thị chữ real-time.</span>
+      <span class="tool-go">Mở demo →</span>
+    </a>
+    <a class="tool" href="/webrtc">
+      <span class="tool-name">WebRTC</span>
+      <span class="tool-desc">Phiên bản WebRTC (Opus codec) của cùng voice agent.</span>
+      <span class="tool-go">Mở webrtc →</span>
+    </a>
+  </div>
+  <div class="api-links">
+    <a href="/v1/config" target="_blank">API Config (JSON)</a>
+    <a href="/v1/health" target="_blank">Health</a>
+    <a href="/v1/usage" target="_blank">Usage</a>
+  </div>
+</main>
+
+<footer>s2s-vn · VAD Silero → STT PhoWhisper → LLM Qwen3 → TTS VieNeu · ws://localhost:8765/v1/realtime</footer>
+</body>
+</html>

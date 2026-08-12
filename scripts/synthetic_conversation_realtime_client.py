@@ -3,7 +3,8 @@
 Mở 1 (hoặc N) kết nối WebSocket tới /v1/realtime và lặp qua ``--turns`` câu hỏi
 mẫu mỗi client, cách nhau ``--interval`` giây. Mỗi turn:
 
-  1. Tổng hợp câu hỏi bằng VieNeu-TTS (cache ra đĩa sau lần chạy đầu).
+  1. Tổng hợp câu hỏi bằng TTS backend đã đăng ký trong TTS_BACKENDS (mặc định
+     vieneu; cache ra đĩa sau lần chạy đầu, theo tên backend).
   2. Stream audio câu hỏi + khoảng lặng cuối như input_audio_buffer.append.
   3. Chờ response.done.
   4. Ngủ tới khi đủ --interval kể từ lúc turn bắt đầu.
@@ -11,8 +12,9 @@ mẫu mỗi client, cách nhau ``--interval`` giây. Mỗi turn:
 Port từ speech-to-speech/scripts/synthetic_conversation_realtime_client.py.
 Khác biệt so với bản gốc:
 
-  * Dùng VieNeu-TTS tiếng Việt để sinh audio mẫu (bản gốc dùng macOS `say`,
-    không có trên Linux) — sinh trực tiếp 16kHz (PROTOCOL_RATE) qua resample.
+  * Sinh audio mẫu qua get_tts_handler() (backend_registry, nguồn TTS_BACKENDS)
+    thay vì macOS `say` (không có trên Linux) — chọn backend qua --tts-name
+    (vieneu | mms-vie | piper-vie), tự resample về PROTOCOL_RATE_HZ.
   * Auth theo s2s-vn: `Authorization: Bearer $S2S_API_KEY` nếu server bật auth
     (env `S2S_API_KEY`); không bật thì không gửi header (bản gốc bắt buộc
     `HF_TOKEN`, s2s-vn coi auth là optional).
@@ -29,13 +31,16 @@ Usage:
   * Soak cả pool (2 client x 60 turns):
       python scripts/synthetic_conversation_realtime_client.py --clients 2 --turns 60
 
+  * Sinh câu hỏi mẫu bằng backend TTS khác (mms-vie / piper-vie):
+      python scripts/synthetic_conversation_realtime_client.py --tts-name piper-vie
+
 Mỗi client dùng offset câu hỏi riêng (coprime shift) để các client chạy song
 song hỏi câu khác nhau mỗi turn — dễ phát hiện rò rỉ cross-session qua log.
 
 Output nằm dưới --log-dir:
-  * prompts/prompt_NNN.wav        — cache audio câu hỏi (sinh 1 lần, dùng lại)
-  * client_NNN/conversation.txt   — transcript từng client kèm timestamp
-  * client_NNN/conversation.wav   — audio phản hồi của assistant nối lại
+  * prompts/<tts_name>/prompt_NNN.wav  — cache audio câu hỏi theo backend (sinh 1 lần, dùng lại)
+  * client_NNN/conversation.txt        — transcript từng client kèm timestamp
+  * client_NNN/conversation.wav        — audio phản hồi của assistant nối lại
 """
 
 import argparse
@@ -48,11 +53,16 @@ import sys
 import time
 import wave
 from pathlib import Path
+from queue import Queue
 
 import numpy as np
 import soundfile as sf
 import websockets
 from scipy.signal import resample_poly
+
+from s2s_vn.backend_registry import TTS_BACKENDS, get_tts_handler
+from s2s_vn.pipeline.messages import TTSInput
+from s2s_vn.s2s_pipeline import PipelineConfig
 
 logger = logging.getLogger("synthetic_client")
 
@@ -117,29 +127,34 @@ PROMPTS: list[str] = [
 # Audio helpers
 # ---------------------------------------------------------------------------
 
-_vieneu_tts = None
+_tts_handler_cache: dict[str, object] = {}
 
 
-def _get_vieneu():
-    """Load VieNeu-TTS 1 lần, dùng lại cho mọi prompt (model load chậm)."""
-    global _vieneu_tts
-    if _vieneu_tts is None:
-        from vieneu import Vieneu
+def _get_tts_handler(tts_name: str, voice: str):
+    """Dựng + warmup 1 TTS handler theo tên (registry), cache lại theo tts_name
+    (model load chậm, chỉ warmup 1 lần cho toàn bộ N prompt). `voice` chỉ có
+    tác dụng khi tts_name=vieneu (mms-vie/piper-vie bỏ qua, 1 giọng cố định)."""
+    if tts_name not in _tts_handler_cache:
+        logger.info(f"Đang tải TTS backend '{tts_name}' để sinh câu hỏi mẫu...")
+        cfg = PipelineConfig(tts_name=tts_name, tts_voice=voice, sample_rate=PROTOCOL_RATE_HZ)
+        handler = get_tts_handler(Queue(), Queue(), cfg)
+        handler.warmup()
+        _tts_handler_cache[tts_name] = handler
+    return _tts_handler_cache[tts_name]
 
-        logger.info("Đang tải VieNeu-TTS (v3turbo)...")
-        _vieneu_tts = Vieneu(mode="v3turbo")
-    return _vieneu_tts
 
-
-def synthesize_with_vieneu(text: str, out_path: Path, voice: str = "Trúc Ly") -> None:
-    """Sinh audio *text* bằng VieNeu-TTS, resample về PROTOCOL_RATE_HZ, ghi WAV."""
-    tts = _get_vieneu()
-    audio = tts.infer(text, voice=voice)  # float32, tần số tts.sample_rate (48k)
-    src_rate = tts.sample_rate
-    if src_rate != PROTOCOL_RATE_HZ:
-        audio = resample_poly(audio, PROTOCOL_RATE_HZ, src_rate)
-    pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
-    write_wav(out_path, pcm16.tobytes(), rate=PROTOCOL_RATE_HZ)
+def synthesize_with_tts(text: str, out_path: Path, tts_name: str, voice: str) -> None:
+    """Sinh audio *text* bằng backend TTS đã đăng ký (TTS_BACKENDS), ghi WAV
+    ở PROTOCOL_RATE_HZ (handler tự resample về rate này, xem *_tts_handler.py)."""
+    handler = _get_tts_handler(tts_name, voice)
+    handler.process(TTSInput(text=text, turn_id=0))
+    pcm16 = bytearray()
+    while not handler.output_queue.empty():
+        out = handler.output_queue.get_nowait()
+        audio_bytes = getattr(out, "audio", None)
+        if audio_bytes:
+            pcm16.extend(audio_bytes)
+    write_wav(out_path, bytes(pcm16), rate=PROTOCOL_RATE_HZ)
 
 
 def load_pcm16_mono(path: Path, target_rate: int = PROTOCOL_RATE_HZ) -> bytes:
@@ -364,15 +379,16 @@ async def run_client(
 async def run_all(args: argparse.Namespace) -> None:
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    prompts_dir = log_dir / "prompts"
+    # cache theo tts_name — mỗi backend sinh giọng khác nhau, không dùng chung
+    prompts_dir = log_dir / "prompts" / args.tts_name
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Sinh {len(PROMPTS)} câu hỏi bằng VieNeu-TTS (cache tại {prompts_dir})...")
+    logger.info(f"Sinh {len(PROMPTS)} câu hỏi bằng backend '{args.tts_name}' (cache tại {prompts_dir})...")
     audio_files: list[tuple[str, Path]] = []
     for i, text in enumerate(PROMPTS):
         wav_path = prompts_dir / f"prompt_{i:03d}.wav"
         if not wav_path.exists():
-            synthesize_with_vieneu(text, wav_path, voice=args.voice)
+            synthesize_with_tts(text, wav_path, tts_name=args.tts_name, voice=args.voice)
         audio_files.append((text, wav_path))
 
     ws_url = args.url or f"ws://{args.host}:{args.port}/v1/realtime"
@@ -436,7 +452,13 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Chỉ dùng khi --url không set.")
     parser.add_argument("--port", type=int, default=8765, help="Chỉ dùng khi --url không set.")
-    parser.add_argument("--voice", default="Trúc Ly", help="Voice VieNeu-TTS để sinh câu hỏi mẫu.")
+    parser.add_argument(
+        "--tts-name",
+        default="vieneu",
+        choices=list(TTS_BACKENDS),
+        help=f"Backend TTS sinh câu hỏi mẫu (mặc định: vieneu — nguồn {list(TTS_BACKENDS)})",
+    )
+    parser.add_argument("--voice", default="Trúc Ly", help="Voice để sinh câu hỏi mẫu — chỉ áp dụng khi --tts-name=vieneu.")
     parser.add_argument("--clients", type=int, default=1, help="Số client song song (mặc định 1).")
     parser.add_argument("--turns", type=int, default=10, help="Số turn mỗi client (mặc định 10).")
     parser.add_argument(

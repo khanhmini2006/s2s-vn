@@ -11,12 +11,13 @@ Cấu trúc package theo repo gốc: component tách thư mục `VAD/ STT/ LLM/ 
 ## Commands
 
 ```bash
-# Install (extras: stt, zipformer, tts, tts-mms, realtime, transformers, talk, dev)
+# Install (extras: stt, zipformer, tts, tts-mms, tts-piper, realtime, transformers, talk, dev)
 pip install -e ".[realtime]"          # server cơ bản
 #   .[transformers] → LLM local Qwen3-8B 4bit (transformers + torch + bitsandbytes + accelerate)
 #   .[talk]         → client mic/loa (sounddevice + websocket-client)
 #   .[zipformer]    → sherpa-onnx
 #   .[tts-mms]      → facebook/mms-tts-vie (VITS, CC-BY-NC-4.0 — chỉ phi thương mại)
+#   .[tts-piper]    → Piper TTS giọng Huongly (ONNX) — GPL-3.0-or-later
 
 # CLI 3 lệnh (theo repo gốc)
 s2s-vn serve                             # server WS + WebRTC (default 0.0.0.0:8765)
@@ -43,7 +44,7 @@ ruff check src tests scripts
 
 **Web demo** (không cần client): `/demo` (nói chuyện + nút Test luồng + Reload phiên), `/webrtc` (WebRTC). Cấu hình qua CLI flags (xem dưới) hoặc REST `POST /v1/config` + persist `config.json`. Server validate từng field config (sai type/khoảng → 400). API key qua `POST /v1/config` (`llm.api_key`) — GET chỉ trả `api_key_set`, không echo key.
 
-**`s2s-vn serve` flags** (dùng khi chưa có file config; có file → file ưu tiên): `--config <file>` (chọn file config, mặc định `config.json`), `--stt-name/--stt-beam-size/--stt-compute-type`, `--llm-backend/--llm-model/--llm-base-url/--llm-api-key/--llm-temperature/--llm-max-tokens/--llm-device/--llm-system-prompt`, `--tts-name/--tts-voice/--tts-streaming/--tts-denoise/--tts-backend/--tts-style/--tts-temperature/--tts-max-chars`, `--vad-threshold/--min-silence-ms/--min-speech-ms/--speech-pad-ms`, `--enable-live-transcription`. Xem đủ: `s2s-vn serve --help`. Flags khai báo ở `server.py main()`; `cli.py serve` pass-through `sys.argv` còn lại → `server.main(argv)` (không trùng khai báo). Ví dụ: `s2s-vn serve --llm-backend transformers --llm-model Qwen/Qwen3-8B --stt-name zipformer-vi-6000h --tts-name vieneu --tts-voice "Trúc Ly"` (`--tts-name mms-vie` → Facebook MMS-TTS, bỏ qua `--tts-voice/--tts-style/...` vì model không hỗ trợ voice clone).
+**`s2s-vn serve` flags** (dùng khi chưa có file config; có file → file ưu tiên): `--config <file>` (chọn file config, mặc định `config.json`), `--stt-name/--stt-beam-size/--stt-compute-type`, `--llm-backend/--llm-model/--llm-base-url/--llm-api-key/--llm-temperature/--llm-max-tokens/--llm-device/--llm-system-prompt`, `--tts-name/--tts-voice/--tts-streaming/--tts-denoise/--tts-backend/--tts-style/--tts-temperature/--tts-max-chars`, `--vad-threshold/--min-silence-ms/--min-speech-ms/--speech-pad-ms`, `--enable-live-transcription`. Xem đủ: `s2s-vn serve --help`. Flags khai báo ở `server.py main()`; `cli.py serve` pass-through `sys.argv` còn lại → `server.main(argv)` (không trùng khai báo). Ví dụ: `s2s-vn serve --llm-backend transformers --llm-model Qwen/Qwen3-8B --stt-name zipformer-vi-6000h --tts-name vieneu --tts-voice "Trúc Ly"` (`--tts-name mms-vie` → Facebook MMS-TTS, `--tts-name piper-vie` → Piper TTS giọng Huongly — cả hai bỏ qua `--tts-voice/--tts-style/...` vì không hỗ trợ voice clone).
 
 **RAG = Tool Calling** (chuẩn OpenAI Realtime): mọi LLM handler đăng ký tool `search_knowledge` (`backend_registry.TOOL_SEARCH_KNOWLEDGE`); khi LLM gọi → `realtime_service._execute_knowledge_tool` query ChromaDB → tool_output → LLM tiếp tục. Không inject trực tiếp.
 
@@ -57,7 +58,7 @@ ruff check src tests scripts
 audio_in → [VAD] → [STT] → [Notifier] → [LLM] → [LMOutputProcessor] → [TTS] → audio_out
                VAD/vad_handler (Silero)   STT/whisper|zipformer   STT/transcription_notifier
                LLM/llm_openai_compatible|transformers            LLM/lm_output_processor
-               TTS/vieneu_tts_handler|mms_tts_handler
+               TTS/vieneu_tts_handler|mms_tts_handler|piper_tts_handler
 ```
 
 - `base_handler.py` (root): vòng lặp `get(timeout=0.1) → process() → put`; exception trong `process` không giết thread. `PIPELINE_END` (b"END") sentinel thoát; `AUDIO_RESPONSE_DONE` trên audio_out.
@@ -76,7 +77,7 @@ audio_in → [VAD] → [STT] → [Notifier] → [LLM] → [LMOutputProcessor] �
 
 ### Handlers (src/s2s_vn/VAD/ STT/ LLM/ TTS/)
 
-- `backend_registry.py` (root): `get_llm_handler()` theo `cfg.backend` — `openai`/`hf-router`/`gemini`/`local` → `OpenAICompatibleLLMHandler` (map provider→base_url/key env trong `PROVIDERS`); `transformers` → `TransformersLLMHandler`. `get_stt_handler` theo `cfg.stt_name` — `phowhisper-medium` → `WhisperSTTHandler` (CT2, default), `zipformer-vi-6000h` → `ZipformerSTTHandler` (sherpa-onnx). `get_tts_handler` theo `cfg.tts_name` — `vieneu` → `VieNeuTTSHandler` (voice clone, MIT, default), `mms-vie` → `MMSTTSHandler` (facebook/mms-tts-vie, VITS, **CC-BY-NC-4.0 — chỉ phi thương mại**, không voice clone). Không type-hint PipelineConfig trong signature (tránh circular import).
+- `backend_registry.py` (root): `get_llm_handler()` theo `cfg.backend` — `openai`/`hf-router`/`gemini`/`local` → `OpenAICompatibleLLMHandler` (map provider→base_url/key env trong `PROVIDERS`); `transformers` → `TransformersLLMHandler`. `get_stt_handler` theo `cfg.stt_name` — `phowhisper-medium` → `WhisperSTTHandler` (CT2, default), `zipformer-vi-6000h` → `ZipformerSTTHandler` (sherpa-onnx). `get_tts_handler` theo `cfg.tts_name` — `vieneu` → `VieNeuTTSHandler` (voice clone, MIT, default), `mms-vie` → `MMSTTSHandler` (facebook/mms-tts-vie, VITS, **CC-BY-NC-4.0 — chỉ phi thương mại**, không voice clone), `piper-vie` → `PiperTTSHandler` (Piper ONNX giọng Huongly, **GPL-3.0-or-later**, không voice clone, checkpoint tại `api/static/voices_piper/huongly.onnx`). Không type-hint PipelineConfig trong signature (tránh circular import).
 - `STT_BACKENDS` / `TTS_BACKENDS`: nguồn sự thật (GET `/v1/config` options, POST validate). **Thêm model STT/TTS = 1 entry trong registry + 1 branch family trong `get_stt_handler`/`get_tts_handler`**.
 - `LLM/llm_openai_compatible.py`: streaming `/v1/chat/completions`, tool calling (`set_tools`, `_history` max 20), `system_prompt` đổi qua `session.update`.
 - `LLM/transformers_llm.py`: Qwen3-8B 4bit. Model không nhận `enable_thinking` kwarg (chỉ 2507 trở lên) → filter `<think>` block + turn tool call không emit text JSON lẫn.
@@ -93,6 +94,8 @@ audio_in → [VAD] → [STT] → [Notifier] → [LLM] → [LMOutputProcessor] �
 - Qwen3-8B-AWQ KHÔNG dùng được (gptqmodel không tương thích transformers 5.12); vLLM trên máy này bế tắc (flashinfer JIT cần CUDA toolkit pip đồng bộ).
 - `--min-silence-ms` (default 300) quá nhỏ → VAD cắt nửa câu; `min_speech_ms=500` lọc nhiễu.
 - **License TTS `mms-vie`**: `facebook/mms-tts-vie` phát hành CC-BY-NC-4.0 (chỉ phi thương mại) — khác MIT của `vieneu` (default). Không dùng `--tts-name mms-vie` nếu dự án/triển khai có yếu tố thương mại. Model cũng không hỗ trợ voice clone (1 giọng cố định), RTF~0.01 (rất nhanh, không streaming autoregressive — `MMSTTSHandler` tự cắt chunk giả lập).
+- **License TTS `piper-vie`**: package `piper-tts` (repo `OHF-voice/piper1-gpl`) là **GPL-3.0-or-later** (copyleft mã nguồn — khác các license MIT/CC-BY-NC-4.0 kia chỉ giới hạn *mục đích dùng output*). Dự án này khai Apache-2.0 trong `pyproject.toml` — xung đột license tiềm ẩn khi import trực tiếp cùng process. Đã cân nhắc và chấp nhận rủi ro này khi tích hợp; cân nhắc lại nếu distribute/đóng gói binary. Giọng `huongly.onnx` không nằm trong kho chính thức `rhasspy/piper-voices` — nguồn gốc/license riêng của checkpoint voice chưa xác minh. RTF~0.03 trên CPU (rất nhanh), streaming thật theo câu (không giả lập cắt chunk như `mms-vie`).
+- **Race condition warmup TTS đa thread**: mọi `*TTSHandler.warmup()` có thể bị gọi đồng thời từ 2 thread — `RealtimeService._warmup_models()` (nền, gọi `pipeline.warmup_all()`) và chính thread `run()` của handler đó (`process()` tự lazy-warmup nếu `self._model/_voice is None`). Với handler dùng `transformers`/thư viện lazy-import không thread-safe (đã tái hiện thực tế với `MMSTTSHandler` → `ImportError`), bắt buộc có `threading.Lock` bọc `warmup()` (double-checked: kiểm tra lại field đã set sau khi acquire lock). `MMSTTSHandler`/`PiperTTSHandler` đã có; handler TTS mới phải theo pattern này.
 - **Test luồng `/v1/test/pipeline`**: lock serial chặn chạy song song (2 test cùng tải Qwen3-8B → CUDA OOM); helper LLM `finally: del h + gc.collect() + torch.cuda.empty_cache()` trả VRAM. Pre-import transformers ở event-loop thread trước khi to_thread (transformers 5.x lazy-import không thread-safe).
 - `config.json` persist (chmod 600, env `S2S_CONFIG_FILE`, `--config <file>` chọn file khác) ưu tiên file > args CLI > default. **Validate khi nạp** (`_validate_llm_key` trong main): backend remote (openai/hf-router/gemini) thiếu key → chặn start + cảnh báo rõ (không chết im). Nhiều lần trong phiên config.json bị đổi thủ công sang `openai` thiếu key — validate mới chặn được; khi thấy bị chặn → sửa config hoặc `--llm-backend transformers`.
 - Drain thread (start_drain) mutate shared state (`response_id`, `_current_response_turn`) trong khi asyncio loop chạy `handle_event` — race đã biết, TODO trong comment.

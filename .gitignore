@@ -6,14 +6,11 @@ __pycache__/
 .ruff_cache/
 
 # Config runtime — có thể chứa API key thật, không commit
-config.json
-config-local.json
-config-gemini.json
-config-mms.json
-*.local.json
+config*.json
 
 # Data / cache runtime
 chroma_db/
+*_benchmark_results.json
 
 # Tool/editor cache — không thuộc project
 .claude/

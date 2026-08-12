@@ -1,10 +1,11 @@
-"""Script benchmark STT — so sánh hiệu năng các STT handler tiếng Việt.
+"""Script benchmark STT — so sánh hiệu năng các STT handler đã đăng ký trong STT_BACKENDS.
 
 Đo: thời gian inference, warmup, time-to-first-token, chất lượng transcription.
 Port từ speech-to-speech/scripts/benchmark_stt.py (bản gốc benchmark
-whisper/whisper-mlx/mlx-audio-whisper/faster-whisper/parakeet-tdt), rút gọn
-theo 2 STT backend hiện có của s2s-vn: phowhisper-medium (faster-whisper CT2)
-và zipformer-vi-6000h (sherpa-onnx).
+whisper/whisper-mlx/mlx-audio-whisper/faster-whisper/parakeet-tdt). Dựng handler
+qua get_stt_handler() (backend_registry, nguồn STT_BACKENDS) thay vì if/elif
+hardcode — backend STT mới thêm sau tự động benchmark được mà không cần sửa
+file này.
 
 Usage:
     python scripts/benchmark_stt.py --audio_file path/to/audio.wav --iterations 10
@@ -22,7 +23,9 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import soundfile as sf
 
+from s2s_vn.backend_registry import STT_BACKENDS, get_stt_handler
 from s2s_vn.pipeline.messages import AudioMode, VADAudio
+from s2s_vn.s2s_pipeline import PipelineConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,8 +110,10 @@ def benchmark_handler(
     handler_name: str,
     audio: np.ndarray,
     iterations: int,
+    beam_size: int,
+    compute_type: str,
 ) -> BenchmarkResult:
-    """Benchmark một STT handler."""
+    """Benchmark một STT handler (dựng qua get_stt_handler — registry STT_BACKENDS)."""
     logger.info(f"Benchmarking {handler_name}...")
     result = BenchmarkResult(handler_name)
     pcm16 = _audio_to_pcm16(audio)
@@ -117,23 +122,13 @@ def benchmark_handler(
         queue_in: Queue[Any] = Queue()
         queue_out: Queue[Any] = Queue()
 
-        handler: Any = None
-        if handler_name == "phowhisper-medium":
-            from s2s_vn.STT.whisper_stt_handler import WhisperSTTHandler
-
-            handler = WhisperSTTHandler(
-                queue_in, queue_out,
-                enable_live_transcription=False,
-            )
-        elif handler_name == "zipformer-vi-6000h":
-            from s2s_vn.STT.zipformer_stt_handler import ZipformerSTTHandler
-
-            handler = ZipformerSTTHandler(
-                queue_in, queue_out,
-                enable_live_transcription=False,
-            )
-        else:
-            raise ValueError(f"Unknown handler: {handler_name}")
+        cfg = PipelineConfig(
+            stt_name=handler_name,
+            stt_beam_size=beam_size,
+            stt_compute_type=compute_type,
+            enable_live_transcription=False,
+        )
+        handler = get_stt_handler(queue_in, queue_out, cfg)
 
         # warmup() tải model — tính riêng thời gian này, tách khỏi vòng lặp inference
         start_warmup = time.perf_counter()
@@ -245,8 +240,21 @@ def main():
     parser.add_argument(
         "--handlers",
         nargs="+",
-        default=["phowhisper-medium", "zipformer-vi-6000h"],
-        help="Danh sách handler cần benchmark (mặc định: cả 2)",
+        default=list(STT_BACKENDS),
+        choices=list(STT_BACKENDS),
+        help=f"Danh sách handler cần benchmark (mặc định: cả {list(STT_BACKENDS)} — nguồn STT_BACKENDS)",
+    )
+    parser.add_argument(
+        "--stt-beam-size",
+        type=int,
+        default=1,
+        help="Beam size (mặc định: 1 = greedy)",
+    )
+    parser.add_argument(
+        "--stt-compute-type",
+        type=str,
+        default="int8_float16",
+        help="Compute type cho phowhisper-medium (int8_float16 | float16 | int8 | float32)",
     )
     parser.add_argument(
         "--iterations",
@@ -272,7 +280,11 @@ def main():
 
     results = []
     for handler_name in args.handlers:
-        result = benchmark_handler(handler_name, audio, args.iterations)
+        result = benchmark_handler(
+            handler_name, audio, args.iterations,
+            beam_size=args.stt_beam_size,
+            compute_type=args.stt_compute_type,
+        )
         results.append(result)
 
     print_results(results)

@@ -25,6 +25,14 @@ def test_mms_backend_selected():
     assert h.model_name == "facebook/mms-tts-vie"
 
 
+def test_piper_backend_selected():
+    q = queue.Queue()
+    h = get_tts_handler(q, q, make_cfg("piper-vie"))
+    assert type(h).__name__ == "PiperTTSHandler"
+    assert h.model_path.endswith("huongly.onnx")
+    assert h.config_path.endswith("huongly.onnx.json")
+
+
 def test_unknown_backend_raises():
     q = queue.Queue()
     with pytest.raises(ValueError):
@@ -33,8 +41,10 @@ def test_unknown_backend_raises():
 
 def test_registry_lists_backends_with_metadata():
     """TTS_BACKENDS là nguồn sự thật: đủ model, có label."""
-    assert set(TTS_BACKENDS) >= {"vieneu", "mms-vie"}
+    assert set(TTS_BACKENDS) >= {"vieneu", "mms-vie", "piper-vie"}
     vn = TTS_BACKENDS["vieneu"]
     assert vn.label and vn.model_name is None
     mms = TTS_BACKENDS["mms-vie"]
     assert mms.label and mms.model_name == "facebook/mms-tts-vie"
+    piper = TTS_BACKENDS["piper-vie"]
+    assert piper.label and piper.model_name.endswith("huongly.onnx")

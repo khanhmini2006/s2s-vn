@@ -14,6 +14,7 @@ stt = ["faster-whisper"]
 zipformer = ["sherpa-onnx"]
 tts = ["vieneu"]
 tts-mms = ["transformers"]  # facebook/mms-tts-vie (VITS, CC-BY-NC-4.0 — chỉ phi thương mại)
+tts-piper = ["piper-tts"]  # Piper TTS giọng Huongly (ONNX) — GPL-3.0-or-later, xem CLAUDE.md Gotchas
 realtime = ["fastapi", "uvicorn", "websockets"]
 transformers = ["transformers", "torch", "bitsandbytes", "accelerate"]
 talk = ["sounddevice", "websocket-client"]

@@ -1,17 +1,21 @@
-"""Script benchmark TTS — đo hiệu năng VieNeu-TTS (voice/backend/style khác nhau).
+"""Script benchmark TTS — đo hiệu năng các backend TTS đã đăng ký trong TTS_BACKENDS.
 
 Đo: warmup time, inference time, time-to-first-chunk, audio duration, RTF
 (real-time factor = audio_duration / inference_time — RTF < 1 nghĩa là TTS
 chạy CHẬM hơn thời gian thực, không đủ cho streaming real-time).
 
 Port từ speech-to-speech/scripts/benchmark_tts.py (bản gốc benchmark nhiều
-engine TTS khác nhau: kokoro/qwen3/pocket_tts/chatTTS/facebookMMS). s2s-vn chỉ
-có 1 engine TTS (VieNeu-TTS) nên script này benchmark theo biến thể
-backend (onnx/pytorch) và voice thay vì theo engine.
+engine TTS khác nhau: kokoro/qwen3/pocket_tts/chatTTS/facebookMMS). s2s-vn có
+3 backend (vieneu/mms-vie/piper-vie, xem backend_registry.TTS_BACKENDS) — script
+dựng handler qua get_tts_handler() (registry) thay vì hardcode 1 class, nên
+backend mới thêm sau tự động benchmark được mà không cần sửa file này.
+`--backends`/`--voices`/`--style` chỉ áp dụng cho tts_name=vieneu (voice clone,
+nhiều style) — mms-vie/piper-vie bỏ qua các field này (1 giọng cố định).
 
 Usage:
-    python scripts/benchmark_tts.py --text "Xin chào bạn" --iterations 3
-    python scripts/benchmark_tts.py --backends onnx pytorch --voices "Trúc Ly"
+    python scripts/benchmark_tts.py --text "Xin chào bạn" --iterations 3   # cả 3 backend
+    python scripts/benchmark_tts.py --tts-names vieneu mms-vie
+    python scripts/benchmark_tts.py --tts-names vieneu --backends onnx pytorch --voices "Trúc Ly"
 """
 
 import argparse
@@ -23,7 +27,9 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from s2s_vn.backend_registry import TTS_BACKENDS, get_tts_handler
 from s2s_vn.pipeline.messages import TTSInput
+from s2s_vn.s2s_pipeline import PipelineConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,28 +97,17 @@ class BenchmarkResult:
         return stats
 
 
-def benchmark_handler(
-    variant_name: str,
-    text: str,
-    iterations: int,
-    backend: str,
-    voice: str,
-    style: str,
-    streaming: bool,
-    denoise: bool,
-    temperature: float,
-) -> BenchmarkResult:
-    """Benchmark một biến thể VieNeu-TTS (backend/voice/style)."""
-    logger.info(f"Benchmarking {variant_name}...")
-    result = BenchmarkResult(variant_name)
+def _build_handler(queue_in, queue_out, tts_name, backend, voice, style, streaming, denoise, temperature):
+    """Dựng TTS handler theo tts_name.
 
-    try:
-        queue_in: Queue[Any] = Queue()
-        queue_out: Queue[Any] = Queue()
-
+    vieneu: khởi tạo trực tiếp để giữ khả năng benchmark tổ hợp backend×voice×style
+    (nhiều biến thể trên cùng 1 model). mms-vie/piper-vie: qua get_tts_handler()
+    (registry) — chỉ 1 giọng cố định, không có tổ hợp để quét.
+    """
+    if tts_name == "vieneu":
         from s2s_vn.TTS.vieneu_tts_handler import VieNeuTTSHandler
 
-        handler = VieNeuTTSHandler(
+        return VieNeuTTSHandler(
             queue_in, queue_out,
             voice=voice,
             output_sample_rate=DEFAULT_SAMPLE_RATE,
@@ -121,6 +116,33 @@ def benchmark_handler(
             backend=backend,
             style=style,
             temperature=temperature,
+        )
+    cfg = PipelineConfig(tts_name=tts_name, sample_rate=DEFAULT_SAMPLE_RATE)
+    return get_tts_handler(queue_in, queue_out, cfg)
+
+
+def benchmark_handler(
+    variant_name: str,
+    text: str,
+    iterations: int,
+    tts_name: str,
+    backend: str,
+    voice: str,
+    style: str,
+    streaming: bool,
+    denoise: bool,
+    temperature: float,
+) -> BenchmarkResult:
+    """Benchmark một biến thể TTS (tts_name, và với vieneu: backend/voice/style)."""
+    logger.info(f"Benchmarking {variant_name}...")
+    result = BenchmarkResult(variant_name)
+
+    try:
+        queue_in: Queue[Any] = Queue()
+        queue_out: Queue[Any] = Queue()
+
+        handler = _build_handler(
+            queue_in, queue_out, tts_name, backend, voice, style, streaming, denoise, temperature,
         )
 
         start_setup = time.perf_counter()
@@ -135,7 +157,7 @@ def benchmark_handler(
             first_output = True
             total_bytes = 0
 
-            # process() của VieNeuTTSHandler put trực tiếp AudioOutput vào
+            # process() của mọi TTSHandler put trực tiếp AudioOutput vào
             # queue_out (không return list) — đọc lại từ queue sau khi process() xong
             tts_input = TTSInput(text=text, turn_id=i)
             handler.process(tts_input)
@@ -169,12 +191,21 @@ def benchmark_handler(
 
 
 def build_benchmark_targets(args) -> List[tuple[str, dict]]:
-    """Tạo danh sách (tên biến thể, kwargs) từ tổ hợp backend × voice."""
+    """Tạo danh sách (tên biến thể, kwargs) theo tts_name.
+
+    vieneu: tổ hợp backend × voice (nhiều biến thể trên cùng model).
+    mms-vie/piper-vie: 1 target mỗi cái — không có tổ hợp backend/voice để quét
+    (registry tự chọn model_name/config_path tương ứng).
+    """
     targets = []
-    for backend in args.backends:
-        for voice in args.voices:
-            name = f"{backend}[{voice}]"
-            targets.append((name, {"backend": backend, "voice": voice}))
+    for tts_name in args.tts_names:
+        if tts_name == "vieneu":
+            for backend in args.backends:
+                for voice in args.voices:
+                    name = f"vieneu:{backend}[{voice}]"
+                    targets.append((name, {"tts_name": tts_name, "backend": backend, "voice": voice}))
+        else:
+            targets.append((tts_name, {"tts_name": tts_name, "backend": None, "voice": None}))
     return targets
 
 
@@ -246,7 +277,7 @@ def save_results(results: List[BenchmarkResult], output_file: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark VieNeu-TTS (s2s-vn)")
+    parser = argparse.ArgumentParser(description="Benchmark TTS backends (s2s-vn)")
     parser.add_argument(
         "--text",
         type=str,
@@ -254,22 +285,29 @@ def main():
         help="Văn bản cần tổng hợp",
     )
     parser.add_argument(
+        "--tts-names",
+        nargs="+",
+        default=list(TTS_BACKENDS),
+        choices=list(TTS_BACKENDS),
+        help=f"Backend TTS cần benchmark (mặc định: cả {list(TTS_BACKENDS)} — nguồn TTS_BACKENDS)",
+    )
+    parser.add_argument(
         "--backends",
         nargs="+",
         default=["onnx"],
-        help="Danh sách backend VieNeu-TTS cần benchmark (onnx | pytorch)",
+        help="Danh sách backend inference của vieneu cần benchmark (onnx | pytorch) — chỉ áp dụng khi --tts-names gồm vieneu",
     )
     parser.add_argument(
         "--voices",
         nargs="+",
         default=["Trúc Ly"],
-        help="Danh sách voice cần benchmark",
+        help="Danh sách voice cần benchmark — chỉ áp dụng khi --tts-names gồm vieneu",
     )
     parser.add_argument(
         "--style",
         type=str,
         default="tu_nhien",
-        help="Style giọng đọc (tu_nhien | tin_tuc | doc_truyen)",
+        help="Style giọng đọc (tu_nhien | tin_tuc | doc_truyen) — chỉ áp dụng khi --tts-names gồm vieneu",
     )
     parser.add_argument(
         "--iterations",
@@ -313,6 +351,7 @@ def main():
             variant_name,
             args.text,
             args.iterations,
+            tts_name=kwargs["tts_name"],
             backend=kwargs["backend"],
             voice=kwargs["voice"],
             style=args.style,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from .base_handler import BaseHandler
 from .LLM.llm_openai_compatible import OpenAICompatibleLLMHandler
@@ -10,7 +11,10 @@ from .LLM.transformers_llm import TransformersLLMHandler
 from .STT.whisper_stt_handler import WhisperSTTHandler
 from .STT.zipformer_stt_handler import ZipformerSTTHandler
 from .TTS.mms_tts_handler import MMSTTSHandler
+from .TTS.piper_tts_handler import PiperTTSHandler
 from .TTS.vieneu_tts_handler import VieNeuTTSHandler
+
+_PIPER_VOICE_DIR = Path(__file__).parent / "api" / "static" / "voices_piper"
 
 
 @dataclass
@@ -72,6 +76,11 @@ TTS_BACKENDS: dict[str, TTSConfig] = {
         name="mms-vie",
         label="Facebook MMS-TTS (VITS, CC-BY-NC-4.0 — chỉ phi thương mại)",
         model_name="facebook/mms-tts-vie",
+    ),
+    "piper-vie": TTSConfig(
+        name="piper-vie",
+        label="Piper TTS - giọng Huongly (ONNX, GPL-3.0-or-later)",
+        model_name=str(_PIPER_VOICE_DIR / "huongly.onnx"),
     ),
 }
 
@@ -258,6 +267,14 @@ def get_tts_handler(
         return MMSTTSHandler(
             input_queue, output_queue,
             model_name=backend.model_name,
+            output_sample_rate=cfg.sample_rate,
+            cancel_scope=cancel_scope,
+        )
+    if backend.name == "piper-vie":
+        return PiperTTSHandler(
+            input_queue, output_queue,
+            model_path=backend.model_name,
+            config_path=backend.model_name + ".json",
             output_sample_rate=cfg.sample_rate,
             cancel_scope=cancel_scope,
         )

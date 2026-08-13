@@ -103,6 +103,13 @@ class RealtimeService:
     def _warmup_models(self) -> None:
         """Warmup model nền; báo server.model_ready khi xong (không block asyncio)."""
         self.pipeline.warmup_all()
+        # Warmup embedding RAG (multilingual-e5-small): không warmup → lần query
+        # đầu tiên (tool call) phải tải model ~12s, chặn luôn vòng LLM.
+        try:
+            from s2s_vn.api.rag_service import rag_service
+            rag_service.search("warmup", top_k=1)
+        except Exception as e:
+            print(f"[warmup] RAG embedding lỗi (sẽ tải lazy khi tool call): {e!r}", flush=True)
         self._warmup_done.set()
         try:
             self._emit("server.model_ready")

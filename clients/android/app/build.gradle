@@ -1,0 +1,39 @@
+apply plugin: 'com.android.application'
+
+android {
+    compileSdkVersion 29
+
+    defaultConfig {
+        applicationId "vn.s2s.robotclient"
+        minSdkVersion 19
+        targetSdkVersion 29
+        versionCode 1
+        versionName "0.1"
+        // Không multiDex: đã bỏ Peanut SDK + ButterKnife/fastjson/Umeng nên
+        // số method còn xa giới hạn 65K của một file DEX.
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    // Giao thức: WS text frame JSON. Bản 1.5.2 là bản SampleApp của Keenon đã dùng.
+    implementation 'org.java-websocket:Java-WebSocket:1.5.2'
+    implementation 'androidx.appcompat:appcompat:1.2.0'
+
+    // Unit test chạy trên JVM (./gradlew testDebugUnitTest) — không cần máy Android.
+    testImplementation 'junit:junit:4.13.2'
+    // org.json trong android.jar chỉ là stub (gọi -> RuntimeException "Stub!").
+    // Bản thật này cho unit test chạy được; lúc chạy trên máy Android thì dùng bản
+    // của hệ điều hành, cùng API nên code không đổi.
+    testImplementation 'org.json:json:20231013'
+}

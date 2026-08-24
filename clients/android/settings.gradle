@@ -1,2 +1,0 @@
-include ':app'
-rootProject.name = "s2s-vn Robot Client"

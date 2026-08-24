@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      Bảng màu: robot đặt trong nhà hàng, hai người xem ở hai khoảng cách.
+      Vùng TỐI dành cho khách đứng xa 1-2m; vùng SÁNG dành cho kỹ thuật viên đứng sát.
+    -->
+
+    <!-- Nền vùng khách. Navy mực, không dùng đen thuần: trên màn 240dpi cũ đen
+         thuần bị bết, navy giữ được chiều sâu và đỡ mỏi mắt dưới đèn nhà hàng. -->
+    <color name="muc">#131A24</color>
+    <color name="muc_nhat">#1C2634</color>
+
+    <!-- Nền vùng kỹ thuật. Men sứ hơi lạnh, gợi bát đĩa — không phải kem ấm. -->
+    <color name="men_su">#EEF1F0</color>
+
+    <!-- Hổ phách: ĐANG NGHE. Màu ấm nhất trong bảng, gắn với đồ ăn. -->
+    <color name="ho_phach">#FFB020</color>
+
+    <!-- Ngọc: SẴN SÀNG và ĐANG NÓI. Mát, tương phản rõ với hổ phách. -->
+    <color name="ngoc">#35C2B0</color>
+
+    <!-- Đất nung: LỖI. Đỏ trầm, không phải đỏ báo động chói. -->
+    <color name="dat_nung">#E05A47</color>
+
+    <!-- Chữ phụ: hai mức, mỗi mức đủ tương phản trên nền của nó. -->
+    <color name="khoi_tren_toi">#8494A6</color>
+    <color name="khoi_tren_sang">#4A5666</color>
+
+</resources>

@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Màn robot: 1280x720dp, NGANG.
+
+  Chia đôi theo khoảng cách người xem, không phải theo loại nội dung:
+  - Trái (nền mực, 62%): khách đứng cách 1-2m. Chữ lớn, chỉ những gì cần liếc là hiểu.
+  - Phải (nền men sứ, 38%): kỹ thuật viên đứng sát. Chữ nhỏ, dày thông tin.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:baselineAligned="false"
+    android:orientation="horizontal">
+
+    <!-- ══ VÙNG KHÁCH ══ -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="62"
+        android:background="@color/muc"
+        android:orientation="vertical"
+        android:paddingBottom="28dp"
+        android:paddingLeft="40dp"
+        android:paddingRight="40dp"
+        android:paddingTop="28dp">
+
+        <!-- Nhãn nhỏ: cho biết đây là kênh nào, không đổi theo trạng thái. -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-condensed"
+            android:letterSpacing="0.26"
+            android:text="TRỢ LÝ GIỌNG NÓI"
+            android:textColor="@color/khoi_tren_toi"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <!-- Trạng thái: chữ lớn nhất màn hình, đọc được từ 2m. -->
+        <TextView
+            android:id="@+id/dongTrangThai"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:fontFamily="sans-serif-light"
+            android:text="Chưa nối"
+            android:textColor="@color/ngoc"
+            android:textSize="46sp" />
+
+        <!-- SIGNATURE: dải biên độ mic. Thứ duy nhất cho biết mic có nghe được không. -->
+        <vn.s2s.robotclient.ui.ThanhBienDo
+            android:id="@+id/thanhBienDo"
+            android:layout_width="match_parent"
+            android:layout_height="76dp"
+            android:layout_marginBottom="18dp"
+            android:layout_marginTop="18dp" />
+
+        <!-- Hội thoại: câu robot vừa trả lời. -->
+        <ScrollView
+            android:id="@+id/khungHoiThoai"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:scrollbars="none">
+
+            <TextView
+                android:id="@+id/textHoiThoai"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingMultiplier="1.35"
+                android:textColor="#E8EDF2"
+                android:textSize="21sp" />
+        </ScrollView>
+
+        <Button
+            android:id="@+id/nutNoiChuyen"
+            android:layout_width="match_parent"
+            android:layout_height="88dp"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/nen_nut_noi"
+            android:enabled="false"
+            android:letterSpacing="0.04"
+            android:text="Đang chờ máy chủ"
+            android:textAllCaps="false"
+            android:textColor="@color/muc"
+            android:textSize="25sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- ══ VÙNG KỸ THUẬT ══ -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="38"
+        android:background="@color/men_su"
+        android:orientation="vertical"
+        android:paddingBottom="24dp"
+        android:paddingLeft="26dp"
+        android:paddingRight="26dp"
+        android:paddingTop="28dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-condensed"
+            android:letterSpacing="0.26"
+            android:text="MÁY CHỦ"
+            android:textColor="@color/khoi_tren_sang"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/oNhapUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:hint="ws://10.1.50.41:8765/v1/realtime"
+            android:inputType="textUri"
+            android:singleLine="true"
+            android:textColor="#1B2430"
+            android:textColorHint="#97A2AE"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/nutNoi"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="10dp"
+            android:letterSpacing="0.04"
+            android:text="Nối lại"
+            android:textAllCaps="false"
+            android:textSize="16sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:fontFamily="sans-serif-condensed"
+            android:letterSpacing="0.26"
+            android:text="NHẬT KÝ"
+            android:textColor="@color/khoi_tren_sang"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <ScrollView
+            android:id="@+id/khungLog"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:layout_weight="1"
+            android:scrollbars="vertical">
+
+            <TextView
+                android:id="@+id/textLog"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:lineSpacingMultiplier="1.25"
+                android:textColor="#333F4D"
+                android:textSize="12sp" />
+        </ScrollView>
+    </LinearLayout>
+
+</LinearLayout>

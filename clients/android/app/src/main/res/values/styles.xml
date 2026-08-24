@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      Theme sáng, khai tường minh.
+      Không khai thì Android 6 lấy theme tối của hệ thống -> chữ trắng nằm trên nền
+      sáng của layout, gần như không đọc được.
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.Holo.Light.DarkActionBar">
+        <item name="android:textColorPrimary">#202124</item>
+        <item name="android:textColorSecondary">#5F6368</item>
+        <item name="android:windowBackground">#FFFFFF</item>
+    </style>
+
+</resources>

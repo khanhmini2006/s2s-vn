@@ -26,10 +26,16 @@ import vn.s2s.robotclient.net.RealtimeWsClient;
  * <p>Robot chỉ đóng vai mic/loa từ xa: thu tiếng đẩy lên server, nhận audio trả về phát
  * ra loa. Toàn bộ VAD/STT/LLM/TTS chạy trên server.
  *
- * <p>Cách bấm: bấm một lần để mở mic, VAD của server tự nhận ra lúc người dùng nói xong
- * và client đóng mic khi nhận {@code input_audio_buffer.speech_stopped}. Mic không mở
- * thường trực — vừa tránh tranh mic với dịch vụ giọng nói của hãng, vừa tránh loa vọng
- * ngược vào mic làm VAD server tự kích.
+ * <p>Cách bấm: bấm một lần để MỞ PHIÊN, mic mở và giữ mở tới khi bấm lần nữa — giống
+ * {@code talk.py} giữ {@code sd.InputStream} suốt chương trình. Trong phiên, người dùng
+ * hỏi liên tục không cần bấm lại, và nói đè lên câu trả lời để cắt lời: VAD server phát
+ * {@code speech_started}, huỷ {@code CancelScope} nên TTS/LLM dừng ngay
+ * ({@code realtime_service.py:288-292}), client xoá buffer phát nên loa im tức thì.
+ *
+ * <p>Đánh đổi của việc giữ mic mở: mỗi khoảng lặng {@code min_silence_ms} (700ms trong
+ * {@code config-piper.json}) đều chốt một lượt, nên người ngập ngừng giữa câu sẽ bị tách
+ * thành hai câu hỏi. Và nếu robot có vọng âm — loa vọng vào mic đủ mạnh để qua ngưỡng
+ * VAD — robot sẽ tự cắt lời chính mình thành vòng lặp; xem cờ {@link #robotDangNoi}.
  */
 public class TalkActivity extends Activity implements RealtimeWsClient.Listener {
 
@@ -63,6 +69,19 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
 
     /** Câu trả lời đang được ghép dần từ các mẩu transcript. */
     private final StringBuilder cauDangGhep = new StringBuilder();
+
+    /**
+     * Robot có đang phát tiếng không.
+     *
+     * <p>Bật khi nhận mẩu audio đầu tiên, tắt khi hết lượt. Không suy ra được từ
+     * {@link SpeakerPlayer}: nó ghi im lặng liên tục để chống underrun nên lúc nào
+     * cũng "đang phát".
+     *
+     * <p>Dùng để log phân biệt hai ca giống hệt nhau trên bề mặt: {@code speech_started}
+     * do người nói chen vào (đúng ý), hay do mic nghe thấy tiếng loa của chính robot
+     * (vọng âm, sẽ thành vòng lặp tự cắt lời chính mình).
+     */
+    private volatile boolean robotDangNoi;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -192,18 +211,21 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
         }
 
         if (mic.dangThu()) {
-            // Bấm lần nữa để hủy giữa chừng (bình thường VAD server tự đóng mic).
+            // Đóng phiên: mic đang mở suốt nên bấm lần nữa là tắt hẳn.
             mic.dungLai();
+            playbackBuffer.clear();
             datNutNghe(false);
-            datTrangThai("Sẵn sàng", MAU_NGOC);
-            ghiLog("người dùng hủy lượt nói");
+            datTrangThai("Đã tắt mic", MAU_KHOI);
+            ghiLog("đóng phiên — tắt mic");
         } else {
-            playbackBuffer.clear(); // im ngay câu cũ nếu robot đang đọc dở
+            // Mở phiên: mic mở và GIỮ mở tới khi bấm lần nữa. Trong phiên, người dùng
+            // hỏi liên tục không cần bấm lại, và nói đè lên câu trả lời để cắt lời.
+            playbackBuffer.clear();
             thanhBienDo.xoa();
             mic.batDau();
             datNutNghe(true);
             datTrangThai("Đang nghe", MAU_HO_PHACH);
-            ghiLog("mở mic");
+            ghiLog("mở phiên — mic mở liên tục");
         }
     }
 
@@ -235,27 +257,38 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
 
     @Override
     public void onSpeechStarted() {
-        // VAD nghe thấy người nói: im ngay câu robot đang đọc (barge-in).
+        // VAD nghe thấy tiếng: im ngay câu robot đang đọc (cắt lời).
         playbackBuffer.clear();
-        ghiLog("speech_started");
+        if (robotDangNoi) {
+            // Kích LÚC ROBOT ĐANG PHÁT. Hoặc người dùng chen lời thật (đúng ý), hoặc
+            // mic nghe thấy tiếng loa của chính robot (vọng âm). Nếu lặp lại đều đặn
+            // mà không ai nói thì là vọng âm — xem biên độ ở dòng log ngay trước.
+            ghiLog("speech_started (ROBOT ĐANG NÓI → cắt lời)");
+        } else {
+            ghiLog("speech_started");
+        }
     }
 
     @Override
     public void onSpeechStopped() {
-        // Người dùng nói xong — đóng mic, khỏi thu tiếng loa lúc robot trả lời.
-        mic.dungLai();
-        ghiLog("speech_stopped — đóng mic, chờ trả lời");
+        // KHÔNG đóng mic — giữ mở suốt phiên, giống talk.py (mic mở một lần trong
+        // `with sd.InputStream(...)` và giữ tới khi thoát). Đây là điều kiện để cắt
+        // lời bằng giọng: mic phải nghe được trong lúc loa đang phát, nếu không thì
+        // `speech_started` không bao giờ xảy ra giữa câu trả lời.
+        ghiLog("speech_stopped — chờ trả lời, mic vẫn mở");
         uiHandler.post(new Runnable() {
             @Override
             public void run() {
+                // Giữ nguyên nút và dải sóng ở trạng thái "đang nghe" vì mic thật sự
+                // vẫn đang thu — đổi sang xám lúc này sẽ mâu thuẫn với cột vẫn nhảy.
                 datTrangThai("Đang xử lý", MAU_KHOI);
-                datNutNghe(false);
             }
         });
     }
 
     @Override
     public void onAudioChunk(byte[] pcm) {
+        robotDangNoi = true;
         playbackBuffer.append(pcm);
     }
 
@@ -272,6 +305,7 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
 
     @Override
     public void onResponseDone() {
+        robotDangNoi = false;
         final String cau = cauDangGhep.toString().trim();
         cauDangGhep.setLength(0);
         ghiLog("response.done");
@@ -281,7 +315,9 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
                 if (!cau.isEmpty()) {
                     themVaoHoiThoai("Robot: " + cau);
                 }
-                datTrangThai("Sẵn sàng", MAU_NGOC);
+                // Mic vẫn mở -> vẫn đang nghe, không phải "sẵn sàng chờ bấm".
+                datTrangThai(mic.dangThu() ? "Đang nghe" : "Sẵn sàng",
+                        mic.dangThu() ? MAU_HO_PHACH : MAU_NGOC);
             }
         });
     }
@@ -292,6 +328,8 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
         uiHandler.post(new Runnable() {
             @Override
             public void run() {
+                mic.dungLai(); // mất kết nối thì thu tiếp cũng vô ích
+                robotDangNoi = false;
                 nutNoiChuyen.setEnabled(false);
                 nutNoiChuyen.setText("Đang chờ máy chủ");
                 thanhBienDo.datDangThu(false);
@@ -314,10 +352,10 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
         dongTrangThai.setTextColor(mau);
     }
 
-    /** Đổi nút và dải sóng giữa hai trạng thái: đang nghe / nghỉ. */
+    /** Đổi nút và dải sóng giữa hai trạng thái: phiên đang mở / đã tắt. */
     private void datNutNghe(boolean dangNghe) {
         nutNoiChuyen.setSelected(dangNghe);
-        nutNoiChuyen.setText(dangNghe ? "Đang nghe — chạm để dừng" : "Chạm để nói");
+        nutNoiChuyen.setText(dangNghe ? "Đang nghe — chạm để tắt" : "Chạm để bắt đầu");
         thanhBienDo.datDangThu(dangNghe);
     }
 

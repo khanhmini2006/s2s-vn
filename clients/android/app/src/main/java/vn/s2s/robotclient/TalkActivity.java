@@ -333,6 +333,9 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
 
     /** Ghi log kỹ thuật; gọi được từ luồng bất kỳ. */
     private void ghiLog(final String dong) {
+        // Ra logcat trước: khi app bị app khác cướp foreground hoặc màn hình không
+        // xem được, đây là bản duy nhất còn lại để lấy qua adb.
+        android.util.Log.i("TalkActivity", dong);
         uiHandler.post(new Runnable() {
             @Override
             public void run() {

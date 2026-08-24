@@ -53,6 +53,9 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
      */
     private static final int CHO_TAT_DUOI_TIENG_MS = 600;
 
+    /** Nhịp hỏi xem loa đọc xong chưa. */
+    private static final int NHIP_KIEM_LOA_MS = 150;
+
     private EditText oNhapUrl;
     private Button nutNoi;
     private Button nutNoiChuyen;
@@ -328,21 +331,8 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
                 }
 
                 if (phienDangMo) {
-                    // Robot nói xong -> mở lại mic để hỏi tiếp, khỏi bấm nút.
-                    // Đợi một nhịp cho đuôi tiếng loa tắt hẳn, tránh mic bắt lại
-                    // âm vọng của chính câu vừa đọc rồi tưởng là người nói.
-                    uiHandler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (phienDangMo && !mic.dangThu()) {
-                                mic.batDau();
-                                datNutNghe(true);
-                                datTrangThai("Đang nghe", MAU_HO_PHACH);
-                                ghiLog("mic mở lại — mời hỏi tiếp");
-                            }
-                        }
-                    }, CHO_TAT_DUOI_TIENG_MS);
                     datTrangThai("Sắp nghe tiếp", MAU_KHOI);
+                    choLoaDocXongRoiMoMic();
                 } else {
                     datTrangThai("Sẵn sàng", MAU_NGOC);
                 }
@@ -379,6 +369,46 @@ public class TalkActivity extends Activity implements RealtimeWsClient.Listener 
     private void datTrangThai(String s, int mau) {
         dongTrangThai.setText(s);
         dongTrangThai.setTextColor(mau);
+    }
+
+    /**
+     * Chờ loa đọc hết rồi mới mở lại mic.
+     *
+     * <p>Không mở mic theo hẹn giờ cố định kể từ {@code response.done}: sự kiện đó chỉ
+     * báo server gửi xong dữ liệu, còn loa vẫn đang đọc phần tồn trong
+     * {@link PlaybackBuffer}. Câu trả lời dài thì loa còn đọc thêm nhiều giây — mở mic
+     * lúc ấy là thu ngay tiếng của chính robot (đo được biên độ chạm trần 32768, trong
+     * khi giọng người chỉ 1000–3400).
+     *
+     * <p>Nên kiểm tra {@link PlaybackBuffer#conAudio()} theo nhịp; hết audio rồi mới
+     * chờ thêm {@link #CHO_TAT_DUOI_TIENG_MS} cho đuôi tiếng và tiếng vọng trong phòng
+     * lắng xuống.
+     */
+    private void choLoaDocXongRoiMoMic() {
+        uiHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!phienDangMo || mic.dangThu()) {
+                    return; // người dùng đã tắt phiên, hoặc mic mở rồi
+                }
+                if (playbackBuffer.conAudio()) {
+                    uiHandler.postDelayed(this, NHIP_KIEM_LOA_MS); // loa còn đọc
+                    return;
+                }
+                // Loa đã cạn — chờ nốt đuôi tiếng rồi mở mic.
+                uiHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (phienDangMo && !mic.dangThu() && !playbackBuffer.conAudio()) {
+                            mic.batDau();
+                            datNutNghe(true);
+                            datTrangThai("Đang nghe", MAU_HO_PHACH);
+                            ghiLog("loa đọc xong — mic mở lại, mời hỏi tiếp");
+                        }
+                    }
+                }, CHO_TAT_DUOI_TIENG_MS);
+            }
+        }, NHIP_KIEM_LOA_MS);
     }
 
     /** Đổi nút và dải sóng giữa hai trạng thái: phiên đang mở / đã tắt. */

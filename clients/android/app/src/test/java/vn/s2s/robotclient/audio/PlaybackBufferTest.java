@@ -1,6 +1,8 @@
 package vn.s2s.robotclient.audio;
 
 import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -75,5 +77,34 @@ public class PlaybackBufferTest {
         byte[] out = new byte[4];
         buffer.read(out);
         assertArrayEquals(new byte[] {0, 0, 0, 0}, out);
+    }
+
+    /**
+     * {@code conAudio()} cho biết loa còn phải đọc nữa hay đã hết.
+     *
+     * <p>Client dùng nó để biết khi nào mở lại mic. Không dùng được sự kiện
+     * {@code response.done} của server cho việc này: nó chỉ báo server gửi xong dữ
+     * liệu, lúc đó loa vẫn đang phát phần còn tồn trong bộ đệm — mở mic ngay thì thu
+     * lại chính tiếng loa.
+     */
+    @Test
+    public void conAudioBaoDungConHayHet() {
+        PlaybackBuffer buffer = new PlaybackBuffer();
+        assertFalse("buffer mới tạo thì rỗng", buffer.conAudio());
+
+        buffer.append(new byte[] {1, 2, 3, 4});
+        assertTrue("vừa nạp thì còn audio", buffer.conAudio());
+
+        // Đọc hết sạch.
+        buffer.read(new byte[4]);
+        assertFalse("đọc hết rồi thì không còn", buffer.conAudio());
+
+        // Đọc một phần: vẫn còn phần đuôi.
+        buffer.append(new byte[] {5, 6, 7, 8});
+        buffer.read(new byte[2]);
+        assertTrue("mới đọc một nửa thì vẫn còn", buffer.conAudio());
+
+        buffer.clear();
+        assertFalse("clear() thì hết", buffer.conAudio());
     }
 }

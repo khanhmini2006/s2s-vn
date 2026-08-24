@@ -43,6 +43,17 @@ public class PlaybackBuffer {
         offsetTrongChunkDau = 0;
     }
 
+    /**
+     * Còn audio chưa phát hay không.
+     *
+     * <p>Dùng để biết loa đã đọc hết câu trả lời chưa. Không thể suy ra từ sự kiện
+     * {@code response.done} của server: sự kiện đó chỉ nói server gửi xong dữ liệu,
+     * lúc đó loa vẫn đang phát phần còn tồn trong bộ đệm.
+     */
+    public synchronized boolean conAudio() {
+        return !chunks.isEmpty();
+    }
+
     /** Lấy audio ra để phát; thiếu bao nhiêu thì ghi im lặng bấy nhiêu. */
     public synchronized void read(byte[] out) {
         int daGhi = 0;
